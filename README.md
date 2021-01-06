@@ -8,7 +8,7 @@ Also known as _crash-all-the-things.py_
 
 1. Download a testcase from syzbot (basically, 0-days)
 2. Compile it
-3. (Optinal) run it
+3. (Optional) run it
 
 ## What it does
 
