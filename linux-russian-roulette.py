@@ -20,11 +20,72 @@ Usage:
 import html.parser
 import os
 import random
+import shutil
+import socket
+import ssl
 import sys
+import tempfile
+import time
+import urllib.error
 import urllib.request
 
 SYZBOT_URL = r'https://syzkaller.appspot.com/upstream'
 SYZBOT_BASE_URL = r'https://syzkaller.appspot.com/'
+
+# SyzKaller's website gets mad otherwise
+SLEEP = 0.8
+TIMEOUT = 5
+MAX_RETRIES = 3
+RETRY_DELAY = 2
+
+
+HELPER = """
+#define __NR_rmdir           4
+#define __NR_open            5
+#define __NR_creat           8
+#define __NR_link			 9
+#define __NR_unlink			10
+#define __NR_mknod			14
+#define __NR_rename			38
+#define __NR_mkdir          39
+#define __NR_symlink		83
+#define __NR_getdents   	141
+"""
+
+
+def robust_download(url, filename=None):
+    """Download with timeout and retry logic"""
+    # Create SSL context that ignores certificate errors
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            if filename:
+                request = urllib.request.Request(url)
+                with urllib.request.urlopen(request, timeout=TIMEOUT, context=ctx) as f:
+                    with open(filename, 'wb') as out_file:
+                        out_file.write(f.read())
+                return None
+            else:
+                with urllib.request.urlopen(url, timeout=TIMEOUT, context=ctx) as f:
+                    return f.read().decode('latin1')
+        except (urllib.error.HTTPError, urllib.error.URLError, socket.timeout, socket.error) as e:
+            print('Download attempt {} failed: {}'.format(attempt + 1, e))
+            if attempt < MAX_RETRIES - 1:
+                print('Retrying in {} seconds...'.format(RETRY_DELAY))
+                time.sleep(RETRY_DELAY)
+            else:
+                print('Max retries reached for {}'.format(url))
+                raise
+        except Exception as e:
+            print('Unexpected error downloading {}: {}'.format(url, e))
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_DELAY)
+            else:
+                raise
+    return None
 
 
 class TableParser(html.parser.HTMLParser):
@@ -69,30 +130,53 @@ class LinkParser(html.parser.HTMLParser):
             return
 
         text = attrs['href']
-        if not text.startswith('/text') or not 'ReproC' in text:
+        if not text.startswith('/text') or 'ReproC' not in text:
             return
 
         self.links.append(text)
 
 
 def roulette_compile(bug):
-    print(f'compiling {bug}')
-    os.system(f'gcc -pthread -o {bug}.exe {bug} -static')
+    print('compiling {}'.format(bug))
+    # os.system('gcc -include {}/helper.h -pthread -o {}.exe {} -static'.format(temp_dir, bug, bug))
+    result = os.system('gcc -pthread -o {}.exe {} -static'.format(bug, bug))
+    return result == 0
 
 
 def roulette_run(bug):
-    print(f'running {bug}.exe')
-    os.system(bug + '.exe')
+    print('running {}.exe'.format(bug))
+    exe_name = os.path.basename(bug) + '.exe'
+    
+    if not os.path.exists(exe_name):
+        print('Executable {} not found, skipping run'.format(exe_name))
+        return
+    
+    run_dir = tempfile.mkdtemp(prefix='roulette_run_')
+    original_dir = os.getcwd()
+    
+    try:
+        # Copy executable to run directory
+        shutil.copy2(exe_name, os.path.join(run_dir, exe_name))
+        os.chdir(run_dir)
+        os.system('timeout {} ./{}'.format(TIMEOUT, exe_name))
+    finally:
+        os.chdir(original_dir)
+        shutil.rmtree(run_dir, ignore_errors=True)
 
 
 def main(exe=False):
+    temp_dir = tempfile.mkdtemp(prefix='roulette_')
+    original_dir = os.getcwd()
 
-    os.makedirs('/tmp/roulette', exist_ok=True)
-    bug_count = 0
+    try:
+        os.chdir(temp_dir)
+        bug_count = 0
 
-    print(SYZBOT_URL)
-    with urllib.request.urlopen(SYZBOT_URL) as f:
-        data = f.read().decode('latin1')
+        with open(os.path.join(temp_dir, 'helper.h'), 'w') as helper:
+            helper.write(HELPER)
+
+        print(SYZBOT_URL)
+        data = robust_download(SYZBOT_URL)
         p = TableParser()
         p.feed(data)
 
@@ -102,20 +186,27 @@ def main(exe=False):
             assert bug.startswith('/bug')
             url = SYZBOT_BASE_URL + bug
             print(url)
-            with urllib.request.urlopen(url) as f:
-                data = f.read().decode('latin1')
-                p = LinkParser()
-                p.feed(data)
+            time.sleep(SLEEP)
+            data = robust_download(url)
+            p = LinkParser()
+            p.feed(data)
 
-                if p.links:
-                    url = SYZBOT_BASE_URL + p.links[0]
-                    print(url)
-                    bug_path = f'/tmp/roulette/{bug_count}.c'
-                    bug_count += 1
-                    urllib.request.urlretrieve(url, bug_path)
-                    roulette_compile(bug_path)
+            if p.links:
+                url = SYZBOT_BASE_URL + p.links[0]
+                print(url)
+                bug_path = os.path.join(temp_dir, '{}.c'.format(bug_count))
+                bug_count += 1
+                robust_download(url, bug_path)
+                time.sleep(SLEEP)
+                if roulette_compile(bug_path):
                     if exe:
                         roulette_run(bug_path)
+                else:
+                    print('Compilation failed for {}'.format(bug_path))
+
+    finally:
+        os.chdir(original_dir)
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == '__main__':

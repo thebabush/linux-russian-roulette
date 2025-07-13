@@ -39,6 +39,25 @@ If you are crazy enough to actually run the programs:
 ./linux-russian-roulette.py whatever
 ```
 
+## Now with Docker! 
+
+For even more dangerous fun, you can run this in a Docker container! 
+
+⚠️ **NEVER EVER RUN `docker compose up`** - it will try to crash your system! ⚠️
+
+```sh
+# Build the container
+docker compose build
+
+# Run compilation only (safer, non-privileged)
+docker compose run roulette
+
+# Run with execution (requires privileged mode - EXTREMELY DANGEROUS)
+ROULETTE_PRIVILEGED=true docker compose run roulette python3 linux-russian-roulette.py go
+```
+
+The `ROULETTE_PRIVILEGED=true` flag enables privileged mode, which gives the container full access to your host system.
+
 ## Why
 
 - Why not?

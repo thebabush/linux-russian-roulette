@@ -1,0 +1,7 @@
+version: '3.8'
+
+services:
+  roulette:
+    build: .
+    privileged: ${ROULETTE_PRIVILEGED:-false}
+    command: ["python3", "linux-russian-roulette.py"]
