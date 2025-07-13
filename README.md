@@ -43,8 +43,6 @@ If you are crazy enough to actually run the programs:
 
 For even more dangerous fun, you can run this in a Docker container! 
 
-⚠️ **NEVER EVER RUN `docker compose up`** - it will try to crash your system! ⚠️
-
 ```sh
 # Build the container
 docker compose build
